@@ -3,10 +3,10 @@
 """
 Regex Tester GUI (pure Python 3.10, stdlib only)
 
-Features
-- Tester tab: regex entry, presets dropdown, flags, sample text picker, big text area, Find/Clear, results list, jump-to-match
-- Patterns tab: searchable table of (name, regex). Selecting a row loads it into Tester.
-- Presets import/export as JSON (menu).
+Now with a third tab: a **visual regex builder**.
+- Left: token chooser (add literals, classes, anchors, alternation, groups, lookarounds, raw snippets).
+- Center: sequence list with move up/down, remove, wrap selection in groups/lookarounds, apply quantifiers.
+- Right: live preview, flags, compile status, "Send to Tester", and "Save as preset".
 
 Author: You
 """
@@ -14,7 +14,7 @@ Author: You
 import json
 import re
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 
 # ----------------------------- Presets ---------------------------------------
 # Add/extend patterns here. Target ~250 comfortably; kept shorter here.
@@ -23,8 +23,7 @@ BUILTIN_PATTERNS: list[tuple[str, str]] = [
     # ---- Emails / Users ----
     ("Email (loose)", r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
     ("Email (strict-ish)", r"(?:(?:[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*)|"
-                           r"\"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\"
-                           r"[\x01-\x09\x0b\x0c\x0e-\x7f])*\")@"
+                           r"\"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*\")@"
                            r"(?:(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}|"
                            r"\[(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\])"),
     ("Username (alnum/._-)", r"[A-Za-z0-9._-]{3,32}"),
@@ -36,13 +35,11 @@ BUILTIN_PATTERNS: list[tuple[str, str]] = [
     ("IPv4 URL", r"https?://(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s]*)?"),
 
     # ---- IP / Net ----
-    ("IPv4 (0-255 aware)", r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}"
-                           r"(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b"),
+    ("IPv4 (0-255 aware)", r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b"),
     ("IPv6 (simple)", r"\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b"),
     ("MAC (colon)", r"\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b"),
     ("MAC (dash)", r"\b[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}\b"),
-    ("CIDR IPv4", r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}"
-                  r"(?:25[0-5]|2[0-4]\d|[01]?\d?\d)/(?:[0-9]|[12]\d|3[0-2])\b"),
+    ("CIDR IPv4", r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)/(?:[0-9]|[12]\d|3[0-2])\b"),
 
     # ---- Dates / Times ----
     ("Date YYYY-MM-DD", r"\b\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b"),
@@ -166,7 +163,7 @@ class RegexTesterApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Regular Expression Tester")
-        self.geometry("1050x720")
+        self.geometry("1180x760")
 
         # Data
         self.patterns: list[dict] = [{"name": n, "regex": p} for n, p in BUILTIN_PATTERNS]
@@ -176,17 +173,20 @@ class RegexTesterApp(tk.Tk):
         self.font_ui = ("Segoe UI", 10)
 
         # Notebook
-        nb = ttk.Notebook(self)
-        nb.pack(fill=tk.BOTH, expand=True)
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill=tk.BOTH, expand=True)
 
-        self.tester_tab = ttk.Frame(nb)
-        self.table_tab = ttk.Frame(nb)
-        nb.add(self.tester_tab, text="Tester")
-        nb.add(self.table_tab, text="Patterns")
+        self.tester_tab = ttk.Frame(self.nb)
+        self.table_tab = ttk.Frame(self.nb)
+        self.builder_tab = ttk.Frame(self.nb)
+        self.nb.add(self.tester_tab, text="Tester")
+        self.nb.add(self.table_tab, text="Patterns")
+        self.nb.add(self.builder_tab, text="Builder")
 
         self._build_menu()
         self._build_tester()
         self._build_table()
+        self._build_builder()
 
     # ---------- Menu ----------
     def _build_menu(self):
@@ -302,13 +302,122 @@ class RegexTesterApp(tk.Tk):
         self.tree.heading("name", text="Name")
         self.tree.heading("regex", text="RegExp")
         self.tree.column("name", width=240, anchor="w")
-        self.tree.column("regex", width=750, anchor="w")
+        self.tree.column("regex", width=850, anchor="w")
         self.tree.pack(fill=tk.BOTH, expand=True)
 
         self.tree.bind("<<TreeviewSelect>>", self.on_table_select)
         self.refresh_table()
 
-    # ---------- Helpers ----------
+    # ---------- Builder tab ----------
+    def _build_builder(self):
+        outer = ttk.Frame(self.builder_tab)
+        outer.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        self.builder_tokens: list[str] = []  # flat list of snippets making the regex
+
+        # Three columns using PanedWindow
+        paned = ttk.PanedWindow(outer, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        # Left: token palette
+        left = ttk.Frame(paned)
+        paned.add(left, weight=1)
+        ttk.Label(left, text="Token palette").pack(anchor="w")
+
+        self.token_var = tk.StringVar(value="Literal")
+        token_types = [
+            "Literal", "Raw snippet", "Any .",
+            "Digit \\d", "Non-digit \\D",
+            "Word \\w", "Non-word \\W",
+            "Whitespace \\s", "Non-whitespace \\S",
+            "Tab \\t", "Newline \\n", "Carriage \\r",
+            "Boundary \\b", "Non-boundary \\B",
+            "Start ^", "End $", "Start string \\A", "End string \\Z",
+            "Class [chars]", "Negated class [^chars]",
+            "Predef [A-Z]", "Predef [a-z]", "Predef [0-9]",
+            "Predef [A-Za-z]", "Predef [A-Za-z0-9_]", 
+            "Alternation |",
+            "Wrap: (group)", "Wrap: (?:non-capturing)", "Wrap: (?P<name>group)",
+            "Wrap: (?=lookahead)", "Wrap: (?!neg lookahead)",
+            "Wrap: (?<=lookbehind)", "Wrap: (?<!neg lookbehind)",
+            "Backreference \\1…"
+        ]
+        self.token_combo = ttk.Combobox(left, textvariable=self.token_var, values=token_types, state="readonly", width=28)
+        self.token_combo.pack(fill=tk.X, pady=4)
+
+        ttk.Button(left, text="Add token", command=self.builder_add_token).pack(fill=tk.X, pady=2)
+
+        ttk.Separator(left).pack(fill=tk.X, pady=6)
+
+        ttk.Label(left, text="Quantifier").pack(anchor="w")
+        self.q_var = tk.StringVar(value="(none)")
+        quant_values = ["(none)", "?", "*", "+", "{n}", "{min,}", "{min,max}"]
+        self.q_combo = ttk.Combobox(left, textvariable=self.q_var, values=quant_values, state="readonly", width=12)
+        self.q_combo.pack(fill=tk.X, pady=2)
+        self.q_lazy = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left, text="Lazy (add '?')", variable=self.q_lazy).pack(anchor="w")
+        ttk.Button(left, text="Apply to selection", command=self.builder_apply_quantifier).pack(fill=tk.X, pady=2)
+
+        ttk.Separator(left).pack(fill=tk.X, pady=6)
+        ttk.Label(left, text="Suggestions").pack(anchor="w")
+        self.sugg_var = tk.StringVar(value="(none)")
+        sugg_values = ["(none)", "Email (loose)", "IPv4 (0-255 aware)", "Date YYYY-MM-DD", "Quoted string (double)"]
+        self.sugg_combo = ttk.Combobox(left, textvariable=self.sugg_var, values=sugg_values, state="readonly")
+        self.sugg_combo.pack(fill=tk.X, pady=2)
+        ttk.Button(left, text="Insert suggestion", command=self.builder_insert_suggestion).pack(fill=tk.X, pady=2)
+
+        # Center: sequence list + controls
+        center = ttk.Frame(paned)
+        paned.add(center, weight=2)
+        ttk.Label(center, text="Regex sequence (tokens)").pack(anchor="w")
+
+        self.seq_list = tk.Listbox(center, activestyle="dotbox")
+        self.seq_list.pack(fill=tk.BOTH, expand=True)
+        ctrls = ttk.Frame(center)
+        ctrls.pack(fill=tk.X, pady=4)
+        ttk.Button(ctrls, text="Up", command=lambda: self.builder_move(-1)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrls, text="Down", command=lambda: self.builder_move(+1)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrls, text="Remove", command=self.builder_remove).pack(side=tk.LEFT, padx=6)
+        ttk.Button(ctrls, text="Clear all", command=self.builder_clear).pack(side=tk.LEFT, padx=2)
+
+        # Right: preview + flags + actions
+        right = ttk.Frame(paned)
+        paned.add(right, weight=2)
+        ttk.Label(right, text="Live preview").pack(anchor="w")
+        self.preview = tk.Text(right, height=5, font=self.font_mono, wrap="none")
+        self.preview.pack(fill=tk.X, pady=2)
+        self.preview.configure(state="disabled")
+
+        self.compile_lbl = ttk.Label(right, text="")
+        self.compile_lbl.pack(anchor="w")
+
+        flags_frame = ttk.Frame(right)
+        flags_frame.pack(fill=tk.X, pady=4)
+        ttk.Label(flags_frame, text="Flags:").pack(side=tk.LEFT)
+        self.b_flag_ic = tk.BooleanVar(value=False)
+        self.b_flag_ml = tk.BooleanVar(value=False)
+        self.b_flag_ds = tk.BooleanVar(value=False)
+        self.b_flag_vb = tk.BooleanVar(value=False)
+        self.b_flag_ai = tk.BooleanVar(value=False)
+        ttk.Checkbutton(flags_frame, text="IGNORECASE", variable=self.b_flag_ic, command=self.builder_update_preview).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(flags_frame, text="MULTILINE", variable=self.b_flag_ml, command=self.builder_update_preview).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(flags_frame, text="DOTALL", variable=self.b_flag_ds, command=self.builder_update_preview).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(flags_frame, text="VERBOSE", variable=self.b_flag_vb, command=self.builder_update_preview).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(flags_frame, text="ASCII", variable=self.b_flag_ai, command=self.builder_update_preview).pack(side=tk.LEFT, padx=4)
+
+        act = ttk.Frame(right)
+        act.pack(fill=tk.X, pady=6)
+        ttk.Button(act, text="Send to Tester", command=self.builder_send_to_tester).pack(side=tk.LEFT, padx=2)
+        ttk.Button(act, text="Save as preset…", command=self.builder_save_preset).pack(side=tk.LEFT, padx=6)
+        ttk.Button(act, text="Copy regex", command=self.builder_copy_regex).pack(side=tk.LEFT, padx=2)
+
+        # Tokens detail
+        ttk.Label(right, text="Tokens (joined for preview above):").pack(anchor="w", pady=(8,0))
+        self.tokens_view = tk.Text(right, height=8, font=self.font_mono, wrap="word")
+        self.tokens_view.pack(fill=tk.BOTH, expand=True)
+        self.tokens_view.configure(state="disabled")
+
+    # ---------- Helpers (common) ----------
     def build_flags(self) -> int:
         flags = 0
         if self.flag_ic.get():
@@ -323,6 +432,7 @@ class RegexTesterApp(tk.Tk):
             flags |= re.ASCII
         return flags
 
+    # ---------- Tester handlers ----------
     def on_preset_selected(self, _event=None):
         name = self.preset_var.get()
         for p in self.patterns:
@@ -359,11 +469,9 @@ class RegexTesterApp(tk.Tk):
         count = 0
         for m in regex.finditer(content):
             start, end = m.span()
-            # Display snippet (limit long matches)
             match_text = m.group(0)
             disp = match_text if len(match_text) <= 80 else match_text[:77] + "..."
             self.results.insert(tk.END, f"{disp!r} @ [{start}:{end}]")
-            # Highlight
             self._highlight_span(start, end)
             count += 1
 
@@ -371,8 +479,6 @@ class RegexTesterApp(tk.Tk):
             self.results.insert(tk.END, "(no matches)")
 
     def _highlight_span(self, start_idx: int, end_idx: int):
-        # Convert int offsets to Tk text indices efficiently
-        # Strategy: use "1.0 + N chars"
         self.text.tag_add("match", f"1.0 + {start_idx} chars", f"1.0 + {end_idx} chars")
 
     def on_result_double(self, _event=None):
@@ -456,6 +562,323 @@ class RegexTesterApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Import error", str(e))
 
+    # ====================== Builder logic =====================================
+    @staticmethod
+    def _escape_literal(s: str) -> str:
+        """Escape a literal for use in a regex (outside of char classes)."""
+        return re.escape(s)
+
+    @staticmethod
+    def _escape_charclass(s: str) -> str:
+        """Escape inside [...] where ^ - ] \ need special care."""
+        out = []
+        for ch in s:
+            if ch in r"\^-]":
+                out.append("\\" + ch)
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def builder_add_token(self):
+        kind = self.token_var.get()
+        add = None
+
+        if kind == "Literal":
+            s = simpledialog.askstring("Literal", "Enter literal text (will be escaped):", parent=self)
+            if s is None:
+                return
+            add = self._escape_literal(s)
+
+        elif kind == "Raw snippet":
+            s = simpledialog.askstring("Raw snippet", "Enter raw regex (no escaping):", parent=self)
+            if s is None:
+                return
+            add = s
+
+        elif kind == "Any .":
+            add = "."
+        elif kind == "Digit \\d":
+            add = r"\d"
+        elif kind == "Non-digit \\D":
+            add = r"\D"
+        elif kind == "Word \\w":
+            add = r"\w"
+        elif kind == "Non-word \\W":
+            add = r"\W"
+        elif kind == "Whitespace \\s":
+            add = r"\s"
+        elif kind == "Non-whitespace \\S":
+            add = r"\S"
+        elif kind == "Tab \\t":
+            add = r"\t"
+        elif kind == "Newline \\n":
+            add = r"\n"
+        elif kind == "Carriage \\r":
+            add = r"\r"
+        elif kind == "Boundary \\b":
+            add = r"\b"
+        elif kind == "Non-boundary \\B":
+            add = r"\B"
+        elif kind == "Start ^":
+            add = r"^"
+        elif kind == "End $":
+            add = r"$"
+        elif kind == "Start string \\A":
+            add = r"\A"
+        elif kind == "End string \\Z":
+            add = r"\Z"
+        elif kind == "Class [chars]":
+            s = simpledialog.askstring("Character class", "Characters to include:", parent=self)
+            if s is None:
+                return
+            add = "[" + self._escape_charclass(s) + "]"
+        elif kind == "Negated class [^chars]":
+            s = simpledialog.askstring("Negated class", "Characters to exclude:", parent=self)
+            if s is None:
+                return
+            add = "[^" + self._escape_charclass(s) + "]"
+        elif kind == "Predef [A-Z]":
+            add = "[A-Z]"
+        elif kind == "Predef [a-z]":
+            add = "[a-z]"
+        elif kind == "Predef [0-9]":
+            add = "[0-9]"
+        elif kind == "Predef [A-Za-z]":
+            add = "[A-Za-z]"
+        elif kind == "Predef [A-Za-z0-9_]":
+            add = r"[A-Za-z0-9_]"
+        elif kind == "Alternation |":
+            add = "|"
+        elif kind.startswith("Wrap: "):
+            self.builder_wrap(kind)
+            return
+        elif kind == "Backreference \\1…":
+            num = simpledialog.askinteger("Backreference", "Group number (1..99):", minvalue=1, maxvalue=99, parent=self)
+            if num is None:
+                return
+            add = "\\" + str(num)
+
+        if add is not None:
+            self.builder_tokens.append(add)
+            self.seq_list.insert(tk.END, add)
+            self.builder_update_preview()
+
+    def builder_move(self, delta: int):
+        sel = list(self.seq_list.curselection())
+        if not sel:
+            return
+        i = sel[0]
+        j = i + delta
+        if j < 0 or j >= len(self.builder_tokens):
+            return
+        self.builder_tokens[i], self.builder_tokens[j] = self.builder_tokens[j], self.builder_tokens[i]
+        self.seq_list.delete(0, tk.END)
+        for t in self.builder_tokens:
+            self.seq_list.insert(tk.END, t)
+        self.seq_list.selection_set(j)
+        self.builder_update_preview()
+
+    def builder_remove(self):
+        sel = list(self.seq_list.curselection())
+        if not sel:
+            return
+        i = sel[0]
+        del self.builder_tokens[i]
+        self.seq_list.delete(i)
+        self.builder_update_preview()
+
+    def builder_clear(self):
+        self.builder_tokens.clear()
+        self.seq_list.delete(0, tk.END)
+        self.builder_update_preview()
+
+    def builder_selected_slice(self):
+        """Return (start,end) inclusive indices for current selection in listbox; if none, returns (None,None)."""
+        sel = list(self.seq_list.curselection())
+        if not sel:
+            return None, None
+        start = sel[0]
+        end = sel[-1]
+        return start, end
+
+    def builder_apply_quantifier(self):
+        q = self.q_var.get()
+        if q == "(none)":
+            return
+        s, e = self.builder_selected_slice()
+        if s is None:
+            messagebox.showinfo("Selection needed", "Select at least one token to quantify.")
+            return
+
+        # Build quantifier suffix
+        suffix = ""
+        if q in ("?", "*", "+"):
+            suffix = q
+        elif q == "{n}":
+            n = simpledialog.askinteger("Exactly n", "n =", minvalue=0, parent=self)
+            if n is None:
+                return
+            suffix = "{" + str(n) + "}"
+        elif q == "{min,}":
+            n = simpledialog.askinteger("At least min", "min =", minvalue=0, parent=self)
+            if n is None:
+                return
+            suffix = "{" + str(n) + ",}"
+        elif q == "{min,max}":
+            minv = simpledialog.askinteger("Range", "min =", minvalue=0, parent=self)
+            if minv is None:
+                return
+            maxv = simpledialog.askinteger("Range", "max =", minvalue=minv, parent=self)
+            if maxv is None:
+                return
+            suffix = "{" + str(minv) + "," + str(maxv) + "}"
+
+        if self.q_lazy.get():
+            suffix += "?"
+
+        # Wrap selection in a non-capturing group then append quantifier
+        inner = "".join(self.builder_tokens[s:e+1])
+        newtok = "(?:" + inner + ")" + suffix
+        # replace slice with single token
+        self.builder_tokens[s:e+1] = [newtok]
+        # refresh listbox
+        self.seq_list.delete(0, tk.END)
+        for t in self.builder_tokens:
+            self.seq_list.insert(tk.END, t)
+        self.seq_list.selection_set(s)
+        self.builder_update_preview()
+
+    def builder_wrap(self, kind: str):
+        s, e = self.builder_selected_slice()
+        if s is None:
+            messagebox.showinfo("Selection needed", "Select a range of tokens to wrap.")
+            return
+        inner = "".join(self.builder_tokens[s:e+1])
+
+        if kind == "Wrap: (group)":
+            newtok = "(" + inner + ")"
+        elif kind == "Wrap: (?:non-capturing)":
+            newtok = "(?:" + inner + ")"
+        elif kind == "Wrap: (?P<name>group)":
+            name = simpledialog.askstring("Named group", "Group name:", parent=self)
+            if not name:
+                return
+            # simple validation of name
+            if not re.match(r"^[A-Za-z_]\w*$", name):
+                messagebox.showerror("Invalid name", "Name must match [A-Za-z_]\\w*")
+                return
+            newtok = "(?P<" + name + ">" + inner + ")"
+        elif kind == "Wrap: (?=lookahead)":
+            newtok = "(?=" + inner + ")"
+        elif kind == "Wrap: (?!neg lookahead)":
+            newtok = "(?!" + inner + ")"
+        elif kind == "Wrap: (?<=lookbehind)":
+            newtok = "(?<=" + inner + ")"
+        elif kind == "Wrap: (?<!neg lookbehind)":
+            newtok = "(?<!" + inner + ")"
+        else:
+            return
+
+        self.builder_tokens[s:e+1] = [newtok]
+        self.seq_list.delete(0, tk.END)
+        for t in self.builder_tokens:
+            self.seq_list.insert(tk.END, t)
+        self.seq_list.selection_set(s)
+        self.builder_update_preview()
+
+    def builder_insert_suggestion(self):
+        name = self.sugg_var.get()
+        if name == "(none)":
+            return
+        # Map to existing BUILTIN_PATTERNS by name where possible
+        lookup = {p["name"]: p["regex"] for p in self.patterns}
+        if name in lookup:
+            self.builder_tokens.append(lookup[name])
+            self.seq_list.insert(tk.END, lookup[name])
+            self.builder_update_preview()
+        else:
+            messagebox.showwarning("Not found", f"No suggestion named '{name}'.")
+
+    def builder_regex_string(self) -> str:
+        return "".join(self.builder_tokens)
+
+    def _builder_flags(self) -> int:
+        flags = 0
+        if self.b_flag_ic.get():
+            flags |= re.IGNORECASE
+        if self.b_flag_ml.get():
+            flags |= re.MULTILINE
+        if self.b_flag_ds.get():
+            flags |= re.DOTALL
+        if self.b_flag_vb.get():
+            flags |= re.VERBOSE
+        if self.b_flag_ai.get():
+            flags |= re.ASCII
+        return flags
+
+    def builder_update_preview(self):
+        pattern = self.builder_regex_string()
+        # preview text
+        self.preview.configure(state="normal")
+        self.preview.delete("1.0", tk.END)
+        self.preview.insert("1.0", pattern)
+        self.preview.configure(state="disabled")
+
+        # tokens view
+        self.tokens_view.configure(state="normal")
+        self.tokens_view.delete("1.0", tk.END)
+        if self.builder_tokens:
+            lines = [f"{i+1:>2}: {tok}" for i, tok in enumerate(self.builder_tokens)]
+            self.tokens_view.insert("1.0", "\n".join(lines))
+        self.tokens_view.configure(state="disabled")
+
+        # compile status
+        try:
+            re.compile(pattern, self._builder_flags())
+            self.compile_lbl.configure(text="✓ Compiles OK", foreground="green")
+        except re.error as e:
+            self.compile_lbl.configure(text=f"✗ Regex error: {e}", foreground="red")
+
+    def builder_send_to_tester(self):
+        pat = self.builder_regex_string()
+        self.regex_var.set(pat)
+        # push flags as well
+        self.flag_ic.set(self.b_flag_ic.get())
+        self.flag_ml.set(self.b_flag_ml.get())
+        self.flag_ds.set(self.b_flag_ds.get())
+        self.flag_vb.set(self.b_flag_vb.get())
+        self.flag_ai.set(self.b_flag_ai.get())
+        self.nb.select(self.tester_tab)
+
+    def builder_save_preset(self):
+        pat = self.builder_regex_string()
+        if not pat:
+            messagebox.showinfo("Empty", "Nothing to save.")
+            return
+        name = simpledialog.askstring("Save as preset", "Preset name:", parent=self)
+        if not name:
+            return
+        # Upsert by name
+        for p in self.patterns:
+            if p["name"] == name:
+                p["regex"] = pat
+                break
+        else:
+            self.patterns.append({"name": name, "regex": pat})
+        # refresh UI
+        self.preset_combo["values"] = [p["name"] for p in self.patterns]
+        self.refresh_table()
+        self.preset_var.set(name)
+        messagebox.showinfo("Saved", f"Preset '{name}' saved.")
+
+    def builder_copy_regex(self):
+        pat = self.builder_regex_string()
+        self.clipboard_clear()
+        self.clipboard_append(pat)
+        self.update()  # now it stays in clipboard
+        messagebox.showinfo("Copied", "Regex copied to clipboard.")
+
+# ----------------------------- main ------------------------------------------
 
 def main():
     app = RegexTesterApp()
