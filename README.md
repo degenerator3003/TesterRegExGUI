@@ -3,6 +3,9 @@
 A desktop app for **building, testing, and managing regular expressions**.  
 No external dependencies — just Python 3.10+ and the standard library (`tkinter`, `re`, `json`).
 
+![Regex Tester](assets/screenshots/Scr893.png)
+![Regex Tester Patterns](assets/screenshots/Scr894.png)
+
 ---
 
 ## Highlights
